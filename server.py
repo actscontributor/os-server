@@ -3,51 +3,60 @@ import os
 from datetime import datetime
 import requests
 
-# ====== TELEGRAM CONFIG (YOUR TOKEN + CHAT ID ADDED) ======
+# ====== TELEGRAM CONFIG (YOURS) ======
 BOT_TOKEN = "8436214196:AAHqP58rX7vGsBlDApI4K5dNPvT0SM0L_Dg"
 CHAT_ID = "8514279115"
 
 app = Flask(__name__)
 
-# Ensure logs folder exists
+# Ensure log directory exists
 if not os.path.exists("logs"):
     os.makedirs("logs")
 
 
 def log_request(req):
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr)
 
-    full_request = f"""
-========================================
-TIME: {timestamp}
-IP: {ip}
-METHOD: {req.method}
-PATH: {req.path}
-QUERY: {req.query_string.decode()}
-HEADERS:
-{dict(req.headers)}
+    # Use forwarded IP if behind render/cloudflare
+    ip = req.headers.get("X-Forwarded-For", req.remote_addr)
 
-BODY:
-{req.get_data(as_text=True)}
-========================================
-"""
+    # ===== Raw HTTP Request Reconstruction =====
+    request_line = f"{req.method} {req.full_path if req.query_string else req.path} HTTP/1.1"
 
-    # Save to file
+    headers = ""
+    for header, value in req.headers.items():
+        headers += f"{header}: {value}\n"
+
+    body = req.get_data(as_text=True)
+
+    raw_full_request = (
+        f"\n=====================================\n"
+        f"TIME: {timestamp}\n"
+        f"IP: {ip}\n\n"
+        f"{request_line}\n"
+        f"{headers}\n"
+        f"{body}\n"
+        f"=====================================\n"
+    )
+
+    # Save full formatted request to daily file
     filename = f"logs/{datetime.utcnow().strftime('%Y-%m-%d')}.log"
     with open(filename, "a") as f:
-        f.write(full_request)
+        f.write(raw_full_request)
 
-    # Send Telegram notification (short version)
+    # Telegram notification (short version)
     short_msg = f"🚨 Request Received\nIP: {ip}\nMethod: {req.method}\nPath: {req.path}"
     tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(tg_url, data={"chat_id": CHAT_ID, "text": short_msg})
+    try:
+        requests.post(tg_url, data={"chat_id": CHAT_ID, "text": short_msg})
+    except:
+        pass
 
-    return full_request
+    return raw_full_request
 
 
-@app.route("/", defaults={'path': ''}, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-@app.route("/<path:path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+@app.route("/", defaults={'path': ''}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.route("/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def catch_all(path):
     log_request(request)
     return "OK", 200
@@ -55,17 +64,16 @@ def catch_all(path):
 
 @app.route("/logs", methods=["GET"])
 def view_logs():
-    """View saved logs in browser."""
+    """View saved logs in browser"""
     content = ""
     for filename in sorted(os.listdir("logs")):
         with open(os.path.join("logs", filename)) as f:
-            content += f"\n=== FILE: {filename} ===\n" + f.read()
+            content += f"\n=== {filename} ===\n" + f.read()
     return f"<pre>{content}</pre>"
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Render.com health check"""
     return {"status": "running"}, 200
 
 
