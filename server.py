@@ -1,81 +1,91 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
+import requests
+import json
 import os
 from datetime import datetime
-import requests
-
-# ====== TELEGRAM CONFIG (YOURS) ======
-BOT_TOKEN = "8436214196:AAHqP58rX7vGsBlDApI4K5dNPvT0SM0L_Dg"
-CHAT_ID = "8514279115"
 
 app = Flask(__name__)
 
-# Ensure log directory exists
-if not os.path.exists("logs"):
-    os.makedirs("logs")
+# ================= CONFIG =================
+TOKEN = "8436214196:AAHqP58rX7vGsBlDApI4K5dNPvT0SM0L_Dg"
+CHAT_ID = "8514279115"
+TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+LOG_FILE = "logs.txt"
+# ==========================================
 
 
-def log_request(req):
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+def log_data(data):
+    """Write logs to file"""
+    with open(LOG_FILE, "a") as f:
+        f.write(data + "\n")
 
-    # Use forwarded IP if behind render/cloudflare
-    ip = req.headers.get("X-Forwarded-For", req.remote_addr)
 
-    # ===== Raw HTTP Request Reconstruction =====
-    request_line = f"{req.method} {req.full_path if req.query_string else req.path} HTTP/1.1"
+def send_telegram(msg):
+    """Send message to Telegram"""
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": msg,
+        "parse_mode": "Markdown"
+    }
+    requests.post(TELEGRAM_URL, json=payload)
 
-    headers = ""
-    for header, value in req.headers.items():
-        headers += f"{header}: {value}\n"
 
-    body = req.get_data(as_text=True)
+@app.route("/", methods=["GET", "POST"])
+def catch_requests():
 
-    raw_full_request = (
-        f"\n=====================================\n"
-        f"TIME: {timestamp}\n"
-        f"IP: {ip}\n\n"
-        f"{request_line}\n"
-        f"{headers}\n"
-        f"{body}\n"
-        f"=====================================\n"
-    )
+    time_stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Save full formatted request to daily file
-    filename = f"logs/{datetime.utcnow().strftime('%Y-%m-%d')}.log"
-    with open(filename, "a") as f:
-        f.write(raw_full_request)
+    # IP Info
+    client_ip = request.headers.get('CF-Connecting-IP') or request.remote_addr
 
-    # Telegram notification (short version)
-    short_msg = f"🚨 Request Received\nIP: {ip}\nMethod: {req.method}\nPath: {req.path}"
-    tg_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    # Method & Path
+    method = request.method
+    path = request.path
+
+    # Body
     try:
-        requests.post(tg_url, data={"chat_id": CHAT_ID, "text": short_msg})
+        body = request.get_json(force=True, silent=True)
+        body_text = json.dumps(body, indent=2) if body else "❌ No JSON Body"
     except:
-        pass
+        body_text = "❌ Failed to parse JSON body"
 
-    return raw_full_request
+    # Headers
+    headers = json.dumps(dict(request.headers), indent=2)
 
+    log_entry = f"""
+======= NEW REQUEST =======
+⏱ Time: {time_stamp}
+🌍 IP: {client_ip}
+🔹 Method: {method}
+📍 Path: {path}
 
-@app.route("/", defaults={'path': ''}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-@app.route("/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-def catch_all(path):
-    log_request(request)
-    return "OK", 200
+📦 Body:
+{body_text}
 
+📨 Headers:
+{headers}
+============================
+"""
 
-@app.route("/logs", methods=["GET"])
-def view_logs():
-    """View saved logs in browser"""
-    content = ""
-    for filename in sorted(os.listdir("logs")):
-        with open(os.path.join("logs", filename)) as f:
-            content += f"\n=== {filename} ===\n" + f.read()
-    return f"<pre>{content}</pre>"
+    log_data(log_entry)
 
+    # Telegram message (simplified)
+    telegram_msg = f"""
+🚨 *Request Received!*
+🌍 *IP:* `{client_ip}`
+🔹 *Method:* `{method}`
+📍 *Path:* `{path}`
 
-@app.route("/health", methods=["GET"])
-def health():
-    return {"status": "running"}, 200
+📦 *Body Preview:* `{body_text[:150]}`
+"""
+
+    send_telegram(telegram_msg)
+
+    return jsonify({"status": "logged"}), 200
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.getenv("PORT", 5000))
+    print(f"🚀 Server running on port {port}")
+    app.run(host="0.0.0.0", port=port)
+
